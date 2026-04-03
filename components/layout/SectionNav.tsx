@@ -2,6 +2,7 @@
 
 import { motion } from "framer-motion";
 import { useEffect, useRef, useState } from "react";
+
 import { cn } from "@/lib/utils";
 
 const SECTIONS = [
@@ -9,63 +10,138 @@ const SECTIONS = [
   { id: "typography", label: "Typography", number: "02" },
   { id: "colors", label: "Color Palette", number: "03" },
   { id: "components", label: "Components", number: "04" },
-];
+] as const;
+
+type SectionId = (typeof SECTIONS)[number]["id"];
 
 export function SectionNav() {
-  const [activeTab, setActiveTab] = useState(SECTIONS[0].id);
+  const [activeTab, setActiveTab] = useState<SectionId>(SECTIONS[0].id);
   const isClickScrolling = useRef(false);
-  const scrollTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const targetSectionId = useRef<string | null>(null);
+  const releaseTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const scrollEndTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const updateActiveFromScrollRef = useRef<() => void>(() => {});
 
   useEffect(() => {
-    const observers = SECTIONS.map((section) => {
-      const element = document.getElementById(section.id);
-
-      if (!element) {
-        return null;
-      }
-
-      const observer = new IntersectionObserver(
-        (entries) => {
-          entries.forEach((entry) => {
-            if (entry.isIntersecting && !isClickScrolling.current) {
-              setActiveTab(section.id);
-            }
-          });
-        },
-        { rootMargin: "-40% 0px -60% 0px" },
+    const getSectionElements = () =>
+      SECTIONS.map((section) => document.getElementById(section.id)).filter(
+        (element): element is HTMLElement => element !== null,
       );
 
-      observer.observe(element);
-      return observer;
-    });
+    const clearTimer = (timer: React.MutableRefObject<ReturnType<typeof setTimeout> | null>) => {
+      if (timer.current) {
+        clearTimeout(timer.current);
+        timer.current = null;
+      }
+    };
+
+    const releaseClickLock = () => {
+      isClickScrolling.current = false;
+      targetSectionId.current = null;
+      clearTimer(releaseTimeout);
+      clearTimer(scrollEndTimeout);
+    };
+
+    const updateActiveFromScroll = () => {
+      const sections = getSectionElements();
+
+      if (sections.length === 0) {
+        return;
+      }
+
+      const viewportAnchor = window.innerHeight * 0.4;
+
+      if (isClickScrolling.current && targetSectionId.current) {
+        const targetSection = document.getElementById(targetSectionId.current);
+
+        if (!targetSection) {
+          releaseClickLock();
+        } else {
+          const rect = targetSection.getBoundingClientRect();
+          const targetReached = rect.top <= viewportAnchor + 24 && rect.bottom >= viewportAnchor - 24;
+          const lastSectionId = SECTIONS[SECTIONS.length - 1]?.id;
+          const scrolledToBottom =
+            window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 4;
+
+          if (!targetReached && !(scrolledToBottom && targetSection.id === lastSectionId)) {
+            return;
+          }
+
+          releaseClickLock();
+        }
+      }
+
+      let nextActiveSectionId: SectionId = SECTIONS[0].id;
+      let closestDistance = Number.POSITIVE_INFINITY;
+
+      for (const section of sections) {
+        const rect = section.getBoundingClientRect();
+        const distance =
+          rect.top <= viewportAnchor && rect.bottom >= viewportAnchor
+            ? 0
+            : Math.min(Math.abs(rect.top - viewportAnchor), Math.abs(rect.bottom - viewportAnchor));
+
+        if (distance < closestDistance) {
+          closestDistance = distance;
+          nextActiveSectionId = section.id as SectionId;
+        }
+      }
+
+      setActiveTab((current) => (current === nextActiveSectionId ? current : nextActiveSectionId));
+    };
+
+    updateActiveFromScrollRef.current = updateActiveFromScroll;
+
+    const handleScroll = () => {
+      updateActiveFromScroll();
+
+      if (isClickScrolling.current) {
+        clearTimer(scrollEndTimeout);
+        scrollEndTimeout.current = setTimeout(() => {
+          releaseClickLock();
+          updateActiveFromScroll();
+        }, 120);
+      }
+    };
+
+    updateActiveFromScroll();
+
+    window.addEventListener("scroll", handleScroll, { passive: true });
+    window.addEventListener("resize", updateActiveFromScroll);
 
     return () => {
-      observers.forEach((observer) => observer?.disconnect());
-
-      if (scrollTimeout.current) {
-        clearTimeout(scrollTimeout.current);
-      }
+      window.removeEventListener("scroll", handleScroll);
+      window.removeEventListener("resize", updateActiveFromScroll);
+      clearTimer(releaseTimeout);
+      clearTimer(scrollEndTimeout);
     };
   }, []);
 
-  const scrollTo = (id: string) => {
+  const scrollTo = (id: SectionId) => {
     const element = document.getElementById(id);
 
     if (!element) {
       return;
     }
 
+    if (releaseTimeout.current) {
+      clearTimeout(releaseTimeout.current);
+    }
+
+    if (scrollEndTimeout.current) {
+      clearTimeout(scrollEndTimeout.current);
+    }
+
     isClickScrolling.current = true;
+    targetSectionId.current = id;
     setActiveTab(id);
     element.scrollIntoView({ behavior: "smooth", block: "start" });
 
-    if (scrollTimeout.current) {
-      clearTimeout(scrollTimeout.current);
-    }
-
-    scrollTimeout.current = setTimeout(() => {
+    releaseTimeout.current = setTimeout(() => {
       isClickScrolling.current = false;
-    }, 1000);
+      targetSectionId.current = null;
+      updateActiveFromScrollRef.current();
+    }, 2500);
   };
 
   return (
@@ -98,12 +174,11 @@ export function SectionNav() {
               >
                 {section.number}
               </span>
+
               <span
                 className={cn(
                   "truncate",
-                  isActive
-                    ? "text-text-main"
-                    : "text-text-dim hover:text-white/70",
+                  isActive ? "text-text-main" : "text-text-dim hover:text-white/70",
                 )}
               >
                 {section.label}
